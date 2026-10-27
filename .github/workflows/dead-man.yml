@@ -1,0 +1,41 @@
+# The desk's dead-man (EST-1051), in Pathmagic/jekyll-heartbeat. Copied here
+# from scripts/managed/desk/heartbeat-repo/ in Pathmagic/pathmagic by
+# `run.sh desk-setup`; dead-man.mjs and github.mjs beside it are copies too.
+# It runs on GitHub's schedule (which GitHub delays and sometimes drops), with
+# this repository's own token, so it watches the Mac without needing it.
+name: dead-man
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      plant:
+        description: "stale — treat the heartbeat as stale, to prove a stale heartbeat opens an issue assigned to Pathmagic"
+        required: false
+        default: ""
+permissions:
+  contents: read
+  issues: write
+jobs:
+  dead-man:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # actions/checkout v7.0.1, pinned to its commit (read 2026-10-27).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: The dead-man's own planted cases
+        run: node dead-man.mjs --self-test
+      - name: Read the heartbeat; open an issue assigned to Pathmagic when it is stale
+        run: node dead-man.mjs
+        env:
+          HEARTBEAT_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLANT: ${{ inputs.plant }}
+      - name: Say so when the dead-man itself failed
+        if: failure()
+        run: >-
+          gh issue create --repo "$GITHUB_REPOSITORY"
+          --title "Desk dead-man failed, run $GITHUB_RUN_ID"
+          --body "@Pathmagic the dead-man failed, so the heartbeat is not watched until it runs clean: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          --assignee Pathmagic
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
