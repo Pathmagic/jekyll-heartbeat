@@ -40,14 +40,33 @@ export function appJwt(appId, privateKeyPem, now = Date.now()) {
 /**
  * A REST client with `token` as the bearer. A refused call throws an Error
  * carrying the status and GitHub's own message, so no failure is silent.
+ *
+ * With `cache` (a Map), a GET is asked conditionally (EST-1080): an answer
+ * carrying an `etag` is kept under its whole path, query included, and the
+ * next GET of that path sends the `etag` as `if-none-match`; a 304 returns a
+ * copy of what was kept, and "does not count against your primary rate
+ * limit" (docs.github.com/en/rest/using-the-rest-api/best-practices-for-
+ * using-the-rest-api). An answer with no `etag` is not kept, so it is read
+ * whole every time; a 304 to a GET that was not conditional is refused.
+ * `pace()` gives the longest `x-poll-interval` GitHub has asked for, the
+ * last `x-ratelimit-remaining` it reported, `counted` (every answer but a
+ * 304, starting from `counted`, the run's token) and `fresh` (GETs answered
+ * with a body, which GitHub counts); `left()` is what `budget` leaves of the
+ * run's reads, the token and the fresh GETs. Writes count with GitHub but not
+ * against `budget`: they follow answers and asks, not the clock.
  */
 export function client({
   fetchFn = fetch,
   token,
   api = API,
   timeoutMs = 15000,
+  cache = null,
+  budget = Number.POSITIVE_INFINITY,
+  counted = 0,
 }) {
+  const seen = { pollSec: 0, remaining: null, counted, fresh: 0 };
   async function call(method, path, body) {
+    const kept = method === "GET" && cache ? cache.get(path) : undefined;
     const res = await fetchFn(`${api}${path}`, {
       method,
       headers: {
@@ -56,10 +75,26 @@ export function client({
         "user-agent": "jekyll-desk",
         authorization: `Bearer ${token}`,
         ...(body ? { "content-type": "application/json" } : {}),
+        ...(kept ? { "if-none-match": kept.etag } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
     });
+    const header = (k) => res.headers?.get?.(k) ?? null;
+    const poll = Number(header("x-poll-interval"));
+    if (Number.isFinite(poll) && poll > seen.pollSec) seen.pollSec = poll;
+    const left = header("x-ratelimit-remaining");
+    if (left !== null && Number.isFinite(Number(left)))
+      seen.remaining = Number(left);
+    if (res.status === 304) {
+      if (!kept)
+        throw new Error(
+          `GitHub ${method} ${path} answered 304 to a request that was not conditional`,
+        );
+      return structuredClone(kept.json);
+    }
+    seen.counted++;
+    if (method === "GET") seen.fresh++;
     const text = await res.text();
     let json = null;
     try {
@@ -74,9 +109,22 @@ export function client({
       e.status = res.status;
       throw e;
     }
+    if (method === "GET" && cache) {
+      const etag = header("etag");
+      if (etag) cache.set(path, { etag, json: structuredClone(json) });
+      else cache.delete(path);
+    }
     return json;
   }
-  return { call };
+  return {
+    call,
+    pace: () => ({ ...seen }),
+    left: () => budget - counted - seen.fresh,
+    /** Widen the budget by reads bounded elsewhere (the heartbeat's). */
+    allow: (n) => {
+      budget += Math.max(0, Number(n) || 0);
+    },
+  };
 }
 
 /** The installation token for the desk's App, from its key. */

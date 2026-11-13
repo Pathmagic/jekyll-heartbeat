@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       plant:
-        description: "stale — treat the heartbeat as stale, to prove a stale heartbeat opens an issue assigned to Pathmagic"
+        description: "stale — treat the heartbeat as stale, to prove a stale heartbeat opens an issue assigned to the founder"
         required: false
         default: ""
 permissions:
@@ -25,17 +25,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: The dead-man's own planted cases
         run: node dead-man.mjs --self-test
-      - name: Read the heartbeat; open an issue assigned to Pathmagic when it is stale
+      - name: Read the heartbeat; open an issue assigned to the founder when it is stale
         run: node dead-man.mjs
         env:
           HEARTBEAT_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLANT: ${{ inputs.plant }}
+      # EST-1261: the founder's login, looked up from their account id
+      # (219521933), which a rename keeps; with no login to be had the issue
+      # is still opened, assigned to no one and mentioning no one.
       - name: Say so when the dead-man itself failed
         if: failure()
-        run: >-
-          gh issue create --repo "$GITHUB_REPOSITORY"
-          --title "Desk dead-man failed, run $GITHUB_RUN_ID"
-          --body "@Pathmagic the dead-man failed, so the heartbeat is not watched until it runs clean: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          --assignee Pathmagic
+        run: |
+          login=$(gh api user/219521933 --jq .login 2>/dev/null) || login=
+          case "$login" in "" | *[!A-Za-z0-9-]*) login= ;; esac
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ -n "$login" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/issues" -f title="Desk dead-man failed, run $GITHUB_RUN_ID" -f body="The dead-man failed, @$login, so the heartbeat is not watched until it runs clean: $url" -f "assignees[]=$login" >/dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues" -f title="Desk dead-man failed, run $GITHUB_RUN_ID" -f body="The dead-man failed, so the heartbeat is not watched until it runs clean: $url. The founder's login could not be looked up from their account id (219521933), so this issue is assigned to no one." >/dev/null
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
